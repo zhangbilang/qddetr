@@ -15,6 +15,7 @@ from collections import OrderedDict
 import torch
 import torch.nn.functional as F
 import torchvision
+from torchvision.models import ResNet50_Weights
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
 from typing import Dict, List
@@ -100,10 +101,11 @@ class Backbone(BackboneBase):
                  return_interm_layers: bool,
                  dilation: bool):
         norm_layer = FrozenBatchNorm2d
+        weight = ResNet50_Weights.DEFAULT
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
-            pretrained=is_main_process(), norm_layer=norm_layer)
-        assert name not in ('resnet18', 'resnet34'), "number of channels are hard coded"
+            weights=weight if is_main_process() else None, norm_layer=norm_layer)
+        assert name in ('resnet50'), "only resnet50"
         super().__init__(backbone, train_backbone, return_interm_layers)
         if dilation:
             self.strides[-1] = self.strides[-1] // 2
