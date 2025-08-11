@@ -8,8 +8,11 @@
 # ------------------------------------------------------------------------
 
 from .deformable_detr import build
+from .quant_ddetr.quant_deformable_detr import build_quant
 
 
 def build_model(args):
     return build(args)
 
+def build_quant_model(args):
+    return build_quant(args)

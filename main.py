@@ -23,7 +23,7 @@ import util.misc as utils
 import datasets.samplers as samplers
 from datasets import build_dataset, get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
-from models import build_model
+from models import build_model, build_quant_model
 
 
 def get_args_parser():
@@ -43,6 +43,12 @@ def get_args_parser():
 
 
     parser.add_argument('--sgd', action='store_true')
+
+    # quant
+    parser.add_argument('--quant', action='store_true', help="")
+    parser.add_argument('--n_bit', default=4, type=int, help="")
+    parser.add_argument('--load_q_RN50', default=False, action='store_true', help="")
+    parser.add_argument('--use_sapm', default=False, action='store_true', help="")
 
     # Variants of Deformable DETR
     parser.add_argument('--with_box_refine', default=False, action='store_true')
@@ -117,6 +123,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
+    parser.add_argument("--resume_weight_only", default=False, action="store_true")
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
@@ -142,7 +149,10 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
 
-    model, criterion, postprocessors = build_model(args)
+    if args.quant:
+        model, criterion, postprocessors = build_quant_model(args)
+    else:
+        model, criterion, postprocessors = build_model(args)
     model.to(device)
 
     model_without_ddp = model
@@ -181,9 +191,7 @@ def main(args):
                 out = True
                 break
         return out
-
-    for n, p in model_without_ddp.named_parameters():
-        print(n)
+    
 
     param_dicts = [
         {
@@ -210,7 +218,7 @@ def main(args):
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
 
     if args.dataset_file == "coco_panoptic":
@@ -230,14 +238,20 @@ def main(args):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
+            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
+            print('resume:', args.resume)
+        
+        # load_q_RN50
+        if args.load_q_RN50:
+            checkpoint['model'] = {k: checkpoint['model'][k] for k in checkpoint['model'] if not k.startswith('backbone')}
+
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
-        if len(missing_keys) > 0:
-            print('Missing Keys: {}'.format(missing_keys))
+        # if len(missing_keys) > 0:
+        #     print('Missing Keys: {}'.format(missing_keys))
         if len(unexpected_keys) > 0:
             print('Unexpected Keys: {}'.format(unexpected_keys))
-        if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
+        if not args.eval and not args.resume_weight_only and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
             p_groups = copy.deepcopy(optimizer.param_groups)
             optimizer.load_state_dict(checkpoint['optimizer'])
@@ -255,10 +269,10 @@ def main(args):
             lr_scheduler.step(lr_scheduler.last_epoch)
             args.start_epoch = checkpoint['epoch'] + 1
         # check the resumed model
-        if not args.eval:
-            test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
-            )
+        # if not args.eval:
+        #     test_stats, coco_evaluator = evaluate(
+        #         model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
+        #     )
     
     if args.eval:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
